@@ -1,99 +1,159 @@
 import streamlit as st
-import cv2
-import numpy as np
-from PIL import Image, ImageSequence
-import tempfile
-import imageio
+from sympy import symbols, And, Or, Not, simplify_logic
+from sympy.logic.inference import satisfiable
+import graphviz
+import pandas as pd
+import streamlit.components.v1 as components
 
-st.set_page_config(page_title="🎨 Real-Time Image & Video Fun Studio", layout="wide")
-st.title("🎨 Real-Time Image & Video Fun Studio with Morphing & Animation Overlay")
+st.set_page_config(page_title="HOL Hardware Verification Simulator", layout="wide")
+st.title("🚀 HOL Hardware Verification Simulator with Clickable HOL Proof Tree & Temporal Abstraction")
 
-option = st.sidebar.selectbox("Choose Mode", ["Image Processing", "Image Morphing", "Video Processing"])
+# ----------------------------
+# Sidebar: Define Sub-Circuits
+# ----------------------------
+st.sidebar.header("Define Sub-Circuits")
+num_subcircuits = st.sidebar.number_input("Number of Sub-Circuits", min_value=1, max_value=3, value=1)
 
-# --- Filters ---
-def apply_filters(img, filter_type):
-    if filter_type == "Grayscale":
-        return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    elif filter_type == "Low Pass Filter":
-        kernel = np.ones((5,5),np.float32)/25
-        return cv2.filter2D(img,-1,kernel)
-    elif filter_type == "High Pass Filter":
-        kernel = np.array([[-1,-1,-1], [-1,8,-1], [-1,-1,-1]])
-        return cv2.filter2D(img,-1,kernel)
-    elif filter_type == "Laplacian":
-        return cv2.Laplacian(img, cv2.CV_64F)
-    elif filter_type == "Edge Detection":
-        return cv2.Canny(img,100,200)
-    elif filter_type == "Histogram Stretch":
-        min_val = np.min(img)
-        max_val = np.max(img)
-        stretched = ((img - min_val) / (max_val - min_val) * 255).astype(np.uint8)
-        return stretched
+subcircuits = {}
+for i in range(1, num_subcircuits + 1):
+    sc_name = st.sidebar.text_input(f"Sub-Circuit {i} Name", f"SC{i}")
+    num_components = st.sidebar.number_input(f"Components in {sc_name}", min_value=1, max_value=3, value=1, key=i)
+    components_dict = {}
+    for j in range(1, num_components + 1):
+        comp_name = st.sidebar.text_input(f"{sc_name} - Component {j} Name", f"C{i}{j}", key=f"{i}{j}")
+        input_vars = st.sidebar.text_input(f"{comp_name} Inputs (comma separated)", "A,B", key=f"{i}{j}i").split(',')
+        output_var = st.sidebar.text_input(f"{comp_name} Output Var", f"Y{i}{j}", key=f"{i}{j}o")
+        expr = st.sidebar.text_input(f"{comp_name} Boolean Expression", f"{output_var} = And({','.join(input_vars)})", key=f"{i}{j}e")
+        delay = st.sidebar.number_input(f"{comp_name} Delay (time units)", min_value=0, max_value=5, value=0, key=f"{i}{j}d")
+        components_dict[comp_name] = {"inputs": input_vars, "output": output_var, "expr": expr, "delay": delay}
+    subcircuits[sc_name] = components_dict
+
+# ----------------------------
+# Display Sub-Circuits
+# ----------------------------
+st.header("Defined Sub-Circuits")
+for sc_name, comps in subcircuits.items():
+    st.subheader(sc_name)
+    for cname, comp in comps.items():
+        st.markdown(f"**{cname}**: Inputs={comp['inputs']}, Output={comp['output']}, Expr=`{comp['expr']}`, Delay={comp['delay']}")
+
+# ----------------------------
+# Hierarchical Circuit Composition
+# ----------------------------
+st.header("Hierarchical Circuit Composition")
+top_level_exprs = []
+for sc_name, comps in subcircuits.items():
+    for comp in comps.values():
+        top_level_exprs.append(comp['expr'].split('=')[1].strip())
+
+full_circuit_expr = " & ".join(top_level_exprs)
+st.markdown(f"**Top-Level Circuit Expression:** {full_circuit_expr}")
+
+# ----------------------------
+# HOL Verification with Temporal Abstraction
+# ----------------------------
+st.header("HOL Verification & Temporal Simulation")
+try:
+    # Collect variables
+    all_vars = set()
+    for comps in subcircuits.values():
+        for comp in comps.values():
+            all_vars.update(comp['inputs'])
+            all_vars.add(comp['output'])
+
+    syms = symbols(list(all_vars))
+    var_map = {str(s): s for s in syms}
+
+    # Evaluate sub-circuits
+    evaluated_exprs = []
+    temporal_info = {}
+    for comps in subcircuits.values():
+        for comp in comps.values():
+            expr_str = comp['expr'].split('=')[1].strip()
+            for k, v in var_map.items():
+                expr_str = expr_str.replace(k, f"var_map['{k}']")
+            evaluated_exprs.append(eval(expr_str))
+            temporal_info[comp['output']] = comp['delay']
+
+    # Combine top-level circuit
+    circuit_logic = And(*evaluated_exprs)
+    simplified = simplify_logic(circuit_logic, form='dnf')
+    st.markdown(f"**Simplified Circuit Expression (DNF):** {simplified}")
+
+    # Satisfiability
+    sat = satisfiable(circuit_logic)
+    if sat:
+        st.success(f"Circuit is logically satisfiable ✅ Example: {sat}")
     else:
-        return img
+        st.error("Circuit is NOT satisfiable ❌")
 
-# --- Image Processing ---
-if option == "Image Processing":
-    uploaded_file = st.file_uploader("Upload an Image", type=["jpg","png","jpeg"])
-    filter_type = st.selectbox("Select Filter/Operation", ["Original", "Grayscale", "Low Pass Filter", "High Pass Filter", "Laplacian", "Edge Detection", "Histogram Stretch"])
-    overlay_file = st.file_uploader("Upload Animation/GIF Overlay (Optional)", type=["gif","png","jpg"])
-    overlay_alpha = st.slider("Overlay Transparency", 0.0, 1.0, 0.5)
-    if uploaded_file:
-        image = np.array(Image.open(uploaded_file).convert('RGB'))
-        processed = apply_filters(image, filter_type)
-        # Overlay
-        if overlay_file:
-            overlay = Image.open(overlay_file).convert('RGBA').resize((processed.shape[1], processed.shape[0]))
-            processed = Image.alpha_composite(Image.fromarray(processed).convert('RGBA'), overlay.putalpha(int(overlay_alpha*255)))
-        st.image(processed, caption="Processed Image", use_column_width=True)
+    # Temporal Simulation
+    st.subheader("Temporal Simulation (Unit Delay)")
+    t_steps = 3
+    sim_table = {var: [0]*t_steps for var in all_vars}
+    for comp_output, delay in temporal_info.items():
+        for t in range(delay, t_steps):
+            sim_table[comp_output][t] = 1
+    st.dataframe(pd.DataFrame(sim_table, index=[f"t={i}" for i in range(t_steps)]))
 
-# --- Image Morphing ---
-elif option == "Image Morphing":
-    st.info("Upload two images to morph between them")
-    img1_file = st.file_uploader("Upload Image 1", type=["jpg","png","jpeg"], key="img1")
-    img2_file = st.file_uploader("Upload Image 2", type=["jpg","png","jpeg"], key="img2")
-    morph_factor = st.slider("Morph Factor", 0.0, 1.0, 0.5)
-    if img1_file and img2_file:
-        img1 = np.array(Image.open(img1_file).convert('RGB'))
-        img2 = np.array(Image.open(img2_file).convert('RGB'))
-        img2_resized = cv2.resize(img2, (img1.shape[1], img1.shape[0]))
-        morphed = cv2.addWeighted(img1, 1-morph_factor, img2_resized, morph_factor, 0)
-        st.image(morphed, caption=f"Morphed Image (Factor={morph_factor})", use_column_width=True)
+    # ----------------------------
+    # Interactive HOL Proof Tree
+    # ----------------------------
+    st.header("Interactive HOL Proof Tree (Click Node)")
 
-# --- Video Processing ---
-elif option == "Video Processing":
-    video_file = st.file_uploader("Upload a Video", type=["mp4","avi","mov"])
-    filter_type = st.selectbox("Select Filter/Operation", ["Original", "Grayscale", "Low Pass Filter", "High Pass Filter", "Laplacian", "Edge Detection"])
-    overlay_file = st.file_uploader("Upload Animation/GIF Overlay (Optional)", type=["gif","png","jpg"])
-    overlay_alpha = st.slider("Overlay Transparency", 0.0, 1.0, 0.5)
-    if video_file:
-        tfile = tempfile.NamedTemporaryFile(delete=False)
-        tfile.write(video_file.read())
-        vidcap = cv2.VideoCapture(tfile.name)
-        fps = vidcap.get(cv2.CAP_PROP_FPS)
-        frames = []
-        # GIF overlay
-        gif_frames = None
-        if overlay_file:
-            overlay_gif = Image.open(overlay_file).convert('RGBA')
-            gif_frames = [np.array(frame.convert('RGBA').resize((int(vidcap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(vidcap.get(cv2.CAP_PROP_FRAME_HEIGHT))))) for frame in ImageSequence.Iterator(overlay_gif)]
-        idx = 0
-        while True:
-            success, frame = vidcap.read()
-            if not success:
-                break
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            processed_frame = apply_filters(frame, filter_type)
-            if len(processed_frame.shape)==2:
-                processed_frame = cv2.cvtColor(processed_frame, cv2.COLOR_GRAY2RGB)
-            # Overlay
-            if gif_frames:
-                overlay_frame = gif_frames[idx % len(gif_frames)]
-                alpha = overlay_alpha
-                processed_frame = cv2.addWeighted(processed_frame, 1-alpha, overlay_frame[:,:,:3], alpha, 0)
-                idx += 1
-            frames.append(processed_frame)
-        temp_output = "processed_video.mp4"
-        imageio.mimsave(temp_output, frames, fps=fps)
-        st.video(temp_output)
-        st.download_button("Download Video", data=open(temp_output,"rb"), file_name="processed_video.mp4", mime="video/mp4")
+    # Build tree with explanations
+    node_explanations = {}
+
+    def describe_expr(expr):
+        if isinstance(expr, And):
+            return f"AND combines: {expr.args}"
+        elif isinstance(expr, Or):
+            return f"OR combines: {expr.args}"
+        elif isinstance(expr, Not):
+            return f"NOT of: {expr.args[0]}"
+        else:
+            return f"Primitive output: {expr}"
+
+    def build_proof_tree_clickable(expr, parent=None, counter=[0], dot=None):
+        if dot is None:
+            dot = graphviz.Digraph(comment='HOL Proof Tree')
+        node_id = f"n{counter[0]}"
+        counter[0] += 1
+        explanation = describe_expr(expr)
+        node_explanations[node_id] = explanation
+        # Add clickable HTML link using URL node
+        dot.node(node_id, label=str(expr), URL=f"#{node_id}", tooltip=explanation)
+        if parent:
+            dot.edge(parent, node_id)
+        if isinstance(expr, And) or isinstance(expr, Or):
+            for arg in expr.args:
+                build_proof_tree_clickable(arg, node_id, counter, dot)
+        elif isinstance(expr, Not):
+            build_proof_tree_clickable(expr.args[0], node_id, counter, dot)
+        return dot
+
+    proof_dot = build_proof_tree_clickable(circuit_logic)
+    # Render as HTML
+    proof_html = proof_dot.pipe(format='svg').decode('utf-8')
+
+    # Embed HTML for clickable nodes
+    components.html(proof_html, height=600)
+
+    # Node selection panel
+    st.subheader("Click Node Simulation")
+    st.markdown("Hover over nodes to see tooltip explanations in the SVG above.")
+
+except Exception as e:
+    st.error(f"Error: {e}")
+
+# ----------------------------
+# Circuit Diagram
+# ----------------------------
+st.header("Circuit Visualization")
+dot = graphviz.Digraph(comment='Hierarchical Circuit Diagram')
+for comps in subcircuits.values():
+    for comp in comps.values():
+        dot.node(comp['output'], f"{comp['output']} ({comp['delay']}t)")
+        for inp in comp['inputs']:
+            dot.edge(inp, comp['output'])
+st.graphviz_chart(dot)
